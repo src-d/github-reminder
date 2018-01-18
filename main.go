@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/kelseyhightower/envconfig"
 	"github.com/sirupsen/logrus"
@@ -11,13 +13,17 @@ import (
 
 func main() {
 	var config struct {
-		Address    string `default:":8080"`
-		AppID      int    `required:"true" split_words:"true"`
-		PrivateKey string `split_words:"true"`
-		Secret     string
+		Address    string `default:":8080" desc:"address where the server will listen to"`
+		AppID      int    `required:"true" split_words:"true" desc:"GitHub application id"`
+		PrivateKey string `split_words:"true" desc:"contents of the GitHub application private key"`
+		Secret     string `desc:"GitHub application's secret value"`
 		Verbose    bool
 	}
-	envconfig.MustProcess("github_reminder", &config)
+	if err := envconfig.Process("github_reminder", &config); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		envconfig.Usage("github_reminder", &config)
+		os.Exit(1)
+	}
 
 	if config.Verbose {
 		logrus.SetLevel(logrus.DebugLevel)

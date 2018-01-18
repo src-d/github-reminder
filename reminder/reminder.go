@@ -170,7 +170,7 @@ func (c *InstallationClient) UpdateIssue(ctx context.Context, owner, name string
 }
 
 func (c *InstallationClient) updateIssue(ctx context.Context, owner, name string, labels []Label, issue *github.Issue) error {
-	logrus.Debugf("handling issue #%d: %s", issue.GetNumber(), issue.GetTitle())
+	logrus.Debugf("handling issue %s/%s#%d: %s", owner, name, issue.GetNumber(), issue.GetTitle())
 	if issue.GetState() != "open" {
 		return nil
 	}

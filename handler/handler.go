@@ -99,7 +99,14 @@ func (s *server) hookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = client.UpdateIssue(r.Context(), owner, name, issue)
+	if issue == 0 {
+		logrus.Infof("updating repository %s/%s", owner, name)
+		err = client.UpdateRepo(r.Context(), owner, name)
+	} else {
+		logrus.Infof("updating issue %s/%s#%d", owner, name, issue)
+		err = client.UpdateIssue(r.Context(), owner, name, issue)
+	}
+
 	if err != nil {
 		logrus.Errorf("could not update issue: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -127,9 +134,13 @@ func extractIssueInfo(kind string, body []byte) (inst int, owner, name string, i
 		if err := json.Unmarshal(body, &data); err != nil {
 			return 0, "", "", 0, errors.Wrap(err, "could not decode issue event")
 		}
+		repo := data.GetIssue().GetRepository()
+		if data.GetIssue().Repository == nil {
+			repo = data.GetRepo()
+		}
 		return data.GetInstallation().GetID(),
-			data.GetIssue().GetRepository().GetOwner().GetLogin(),
-			data.GetIssue().GetRepository().GetName(),
+			repo.GetOwner().GetLogin(),
+			repo.GetName(),
 			data.GetIssue().GetNumber(),
 			nil
 	case "pull_request":
@@ -141,6 +152,16 @@ func extractIssueInfo(kind string, body []byte) (inst int, owner, name string, i
 			data.GetPullRequest().GetHead().GetRepo().GetOwner().GetLogin(),
 			data.GetPullRequest().GetHead().GetRepo().GetName(),
 			data.GetPullRequest().GetNumber(),
+			nil
+	case "label":
+		var data github.LabelEvent
+		if err := json.Unmarshal(body, &data); err != nil {
+			return 0, "", "", 0, errors.Wrap(err, "could not decode label event")
+		}
+		return data.GetInstallation().GetID(),
+			data.GetRepo().GetOwner().GetLogin(),
+			data.GetRepo().GetName(),
+			0,
 			nil
 	}
 	return 0, "", "", 0, errors.Errorf("unkown event type %s", kind)
