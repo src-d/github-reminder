@@ -190,10 +190,12 @@ func (c *InstallationClient) updateIssue(ctx context.Context, owner, name string
 	days := time.Until(deadline).Hours() / 24
 
 	logrus.Debugf("issue #%d deadline in %v days", issue.GetNumber(), days)
-	var labelIdx int
-	for labelIdx = 0; labelIdx < len(labels); labelIdx++ {
-		if labels[labelIdx].Days > int(days) {
-			break
+	labelIdx := -1
+	if days > -1 {
+		for labelIdx = 0; labelIdx < len(labels); labelIdx++ {
+			if labels[labelIdx].Days > int(days) {
+				break
+			}
 		}
 	}
 
@@ -205,6 +207,10 @@ func (c *InstallationClient) updateIssue(ctx context.Context, owner, name string
 
 	// new deadline is too large for labels.
 	if labelIdx >= len(labels) {
+		return nil
+	}
+	// deadline is in the past.
+	if labelIdx < 0 {
 		return nil
 	}
 
