@@ -13,3 +13,6 @@
 # Secrets
 secret.txt
 *.pem
+
+# Binary
+github-reminder
