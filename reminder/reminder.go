@@ -3,6 +3,7 @@ package reminder
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bradleyfalzon/ghinstallation"
+	"github.com/campoy/unique"
 	"github.com/google/go-github/github"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -112,7 +114,7 @@ func (c *InstallationClient) UpdateRepo(ctx context.Context, owner, name string)
 	}
 
 	for _, issue := range issues {
-		if err := c.updateIssue(ctx, owner, name, labels, issue); err != nil {
+		if err := c.updateIssue(ctx, issue, labels); err != nil {
 			return errors.Wrapf(err, "could not handle issue %d", issue.GetNumber())
 		}
 
@@ -166,42 +168,98 @@ func (c *InstallationClient) UpdateIssue(ctx context.Context, owner, name string
 		return errors.Wrapf(err, "could not fetch issue %s/%s#%d", owner, name, number)
 	}
 
-	return c.updateIssue(ctx, owner, name, labels, issue)
+	return c.updateIssue(ctx, issue, labels)
 }
 
-func (c *InstallationClient) updateIssue(ctx context.Context, owner, name string, labels []Label, issue *github.Issue) error {
-	logrus.Debugf("handling issue %s/%s#%d: %s", owner, name, issue.GetNumber(), issue.GetTitle())
+func (c *InstallationClient) updateIssue(ctx context.Context, issue *github.Issue, labels []Label) error {
+	owner := issue.GetRepository().GetOwner().GetLogin()
+	name := issue.GetRepository().GetName()
+	number := issue.GetNumber()
+	logrus.Debugf("handling issue %s/%s#%d: %s", owner, name, number, issue.GetTitle())
 	if issue.GetState() != "open" {
 		return nil
 	}
 
-	comments, _, err := c.client.Issues.ListComments(ctx, owner, name, issue.GetNumber(), nil)
+	comments, _, err := c.client.Issues.ListComments(ctx, owner, name, number, nil)
 	if err != nil {
 		return errors.Wrap(err, "could not fetch comments")
 	}
 
-	deadline := findDeadline(issue.GetBody())
+	if err = c.checkReminders(ctx, owner, name, number, issue, comments); err != nil {
+		return err
+	}
+
+	bodies := []string{issue.GetBody()}
 	for _, comment := range comments {
-		if d := findDeadline(comment.GetBody()); !d.IsZero() {
-			deadline = d
+		bodies = append(bodies, comment.GetBody())
+	}
+	deadlines := findTimes("deadline", bodies)
+	if len(deadlines) == 0 {
+		return nil
+	}
+	deadline := deadlines[len(deadlines)-1]
+	return c.checkDeadlines(ctx, owner, name, number, deadline, labels)
+}
+
+func (c *InstallationClient) checkReminders(ctx context.Context, owner, name string, number int, issue *github.Issue, comments []*github.IssueComment) error {
+	var reminded []time.Time
+	for _, comment := range comments {
+		if comment.GetUser().GetHTMLURL() == "https://github.com/apps/deadline-reminder" {
+			date := comment.GetCreatedAt()
+			date = time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+			reminded = append(reminded, date)
 		}
 	}
 
+	check := func(author, body string) error {
+		for _, reminder := range findTimes("reminder", []string{body}) {
+			if diff := time.Until(reminder); diff > 24*time.Hour || diff < -24*time.Hour {
+				continue
+			}
+
+			done := false
+			for _, r := range reminded {
+				done = done || r.Equal(reminder)
+			}
+			if done {
+				continue
+			}
+
+			text := fmt.Sprintf("hi @%s, it's reminder day!", author)
+			comment := &github.IssueComment{Body: &text}
+			_, _, err := c.client.Issues.CreateComment(ctx, owner, name, number, comment)
+			if err != nil {
+				return errors.Wrapf(err, "could not comment on %s/%s#%d", owner, name, number)
+			}
+		}
+		return nil
+	}
+
+	if err := check(issue.GetUser().GetLogin(), issue.GetBody()); err != nil {
+		return err
+	}
+	for _, comment := range comments {
+		if err := check(comment.GetUser().GetLogin(), comment.GetBody()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *InstallationClient) checkDeadlines(ctx context.Context, owner, name string, number int, deadline time.Time, labels []Label) error {
 	days := time.Until(deadline).Hours() / 24
 
-	logrus.Debugf("issue #%d deadline in %v days", issue.GetNumber(), days)
-	labelIdx := -1
-	if days > -1 {
-		for labelIdx = 0; labelIdx < len(labels); labelIdx++ {
-			if labels[labelIdx].Days > int(days) {
-				break
-			}
+	logrus.Debugf("issue #%d deadline in %v days", number, days)
+	var labelIdx int
+	for labelIdx = 0; labelIdx < len(labels); labelIdx++ {
+		if labels[labelIdx].Days > int(days) {
+			break
 		}
 	}
 
 	for i, l := range labels {
 		if i != labelIdx {
-			c.client.Issues.RemoveLabelForIssue(ctx, owner, name, issue.GetNumber(), l.Name)
+			c.client.Issues.RemoveLabelForIssue(ctx, owner, name, number, l.Name)
 		}
 	}
 
@@ -215,32 +273,35 @@ func (c *InstallationClient) updateIssue(ctx context.Context, owner, name string
 	}
 
 	newLabel := labels[labelIdx]
-	logrus.Debugf("applying %s to issue#%d", newLabel.Name, issue.GetNumber())
-	_, _, err = c.client.Issues.AddLabelsToIssue(ctx, owner, name, issue.GetNumber(), []string{newLabel.Name})
+	logrus.Debugf("applying %s to issue#%d", newLabel.Name, number)
+	_, _, err := c.client.Issues.AddLabelsToIssue(ctx, owner, name, number, []string{newLabel.Name})
 	return errors.Wrapf(err, "could not apply label %s", newLabel.Name)
 }
 
-const triggerWord = "deadline"
+func findTimes(word string, bodies []string) []time.Time {
+	var times []time.Time
+	for _, body := range bodies {
+		body = strings.ToLower(body)
+		for {
+			i := strings.Index(body, word)
+			if i < 0 {
+				break
+			}
+			body = body[i+len(word):]
 
-func findDeadline(s string) time.Time {
-	var deadline time.Time
-	s = strings.ToLower(s)
-	for {
-		i := strings.Index(s, triggerWord)
-		if i < 0 {
-			return deadline
-		}
-		s = s[i+len(triggerWord):]
+			lb := strings.Index(body, "\n")
+			if lb < 0 {
+				lb = len(body)
+			}
 
-		lb := strings.Index(s, "\n")
-		if lb < 0 {
-			lb = len(s)
-		}
-
-		if d := parseDeadline(s[:lb]); !d.IsZero() {
-			deadline = d
+			if d := parseDate(body[:lb]); !d.IsZero() {
+				times = append(times, d)
+			}
 		}
 	}
+
+	unique.Slice(&times, func(i, j int) bool { return times[i].Before(times[j]) })
+	return times
 }
 
 var dateLayouts = []string{
@@ -249,9 +310,11 @@ var dateLayouts = []string{
 	"2006 Jan 2",
 	"January 2 2006",
 	"Jan 2 2006",
+	"January 2, 2006",
+	"Jan 2, 2006",
 }
 
-func parseDeadline(s string) time.Time {
+func parseDate(s string) time.Time {
 	s = strings.TrimSpace(strings.Trim(strings.TrimSpace(s), ":"))
 	for _, l := range dateLayouts {
 		if t, err := time.Parse(l, s); err == nil {
