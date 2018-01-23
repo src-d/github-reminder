@@ -17,10 +17,15 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// newClient can be replaced by test cases.
+var newClient = func(client *http.Client) client {
+	return &githubClient{github.NewClient(client)}
+}
+
 // An ApplicationClient provides the methods that do not depend on an installation.
 type ApplicationClient struct {
 	appID  int
-	client *github.Client
+	client client
 }
 
 // NewApplicationClient returns a new ApplicationClient.
@@ -36,29 +41,20 @@ func NewApplicationClient(appID int, key []byte, transport http.RoundTripper) (*
 	}
 	return &ApplicationClient{
 		appID:  appID,
-		client: github.NewClient(&http.Client{Transport: itr}),
+		client: newClient(&http.Client{Transport: itr}),
 	}, nil
 }
 
 // Installations lists all of the installation ids for the authenticated application.
 func (c *ApplicationClient) Installations(ctx context.Context) ([]int, error) {
-	insts, _, err := c.client.Apps.ListInstallations(ctx, nil)
-	if err != nil {
-		return nil, errors.Wrap(err, "could not fetch installations")
-	}
-
-	var ids []int
-	for _, inst := range insts {
-		ids = append(ids, inst.GetID())
-	}
-	return ids, nil
+	return c.client.installations(ctx)
 }
 
 // An InstallationClient provides all of the features depending on a specific installation.
 type InstallationClient struct {
 	appID          int
 	installationID int
-	client         *github.Client
+	client         client
 }
 
 // NewInstallationClient returns a new InstallationClient.
@@ -71,7 +67,7 @@ func NewInstallationClient(appID, installationID int, key []byte, transport http
 	return &InstallationClient{
 		appID:          appID,
 		installationID: installationID,
-		client:         github.NewClient(&http.Client{Transport: itr}),
+		client:         newClient(&http.Client{Transport: itr}),
 	}, nil
 }
 
@@ -79,24 +75,24 @@ func NewInstallationClient(appID, installationID int, key []byte, transport http
 func (c *InstallationClient) UpdateInstallation(ctx context.Context) error {
 	logrus.Infof("updating all repos for installation %d/%d", c.appID, c.installationID)
 
-	repos, _, err := c.client.Apps.ListRepos(ctx, nil)
+	repos, err := c.client.repos(ctx)
 	if err != nil {
 		return errors.Wrap(err, "could not list repositories")
 	}
 
 	for _, repo := range repos {
-		if err := c.UpdateRepo(ctx, repo.GetOwner().GetLogin(), repo.GetName()); err != nil {
-			return errors.Wrapf(err, "could not handle repository %s", repo.GetFullName())
+		if err := c.UpdateRepo(ctx, repo.owner, repo.name); err != nil {
+			return errors.Wrapf(err, "could not handle repository %s/%s", repo.owner, repo.name)
 		}
 	}
 	return nil
 }
 
 // UpdateRepo iterates over all of the issues and PRs in a repository updating all deadline labels.
-func (c *InstallationClient) UpdateRepo(ctx context.Context, owner, name string) error {
-	logrus.Debugf("handling repository %s/%s", owner, name)
+func (c *InstallationClient) UpdateRepo(ctx context.Context, owner, repo string) error {
+	logrus.Debugf("handling repository %s/%s", owner, repo)
 
-	labels, err := c.LabelsInRepo(ctx, owner, name)
+	labels, err := c.LabelsInRepo(ctx, owner, repo)
 	if err != nil {
 		return err
 	}
@@ -108,18 +104,16 @@ func (c *InstallationClient) UpdateRepo(ctx context.Context, owner, name string)
 		logrus.Debugf("label #%d: %s", i, l.Name)
 	}
 
-	issues, _, err := c.client.Issues.ListByRepo(ctx, owner, name, &github.IssueListByRepoOptions{State: "open"})
+	numbers, err := c.client.issues(ctx, owner, repo)
 	if err != nil {
 		return errors.Wrap(err, "could not list issues")
 	}
 
-	for _, issue := range issues {
-		if err := c.updateIssue(ctx, issue, labels); err != nil {
-			return errors.Wrapf(err, "could not handle issue %d", issue.GetNumber())
+	for _, number := range numbers {
+		if err := c.updateIssue(ctx, owner, repo, number, labels); err != nil {
+			return errors.Wrapf(err, "could not handle issue %d", number)
 		}
-
 	}
-
 	return nil
 }
 
@@ -130,82 +124,72 @@ type Label struct {
 }
 
 // LabelsInRepo lists all of the deadline related labels in a repository.
-func (c *InstallationClient) LabelsInRepo(ctx context.Context, owner, name string) ([]Label, error) {
-	ls, _, err := c.client.Issues.ListLabels(ctx, owner, name, nil)
+func (c *InstallationClient) LabelsInRepo(ctx context.Context, owner, repo string) ([]Label, error) {
+	labels, err := c.client.repoLabels(ctx, owner, repo)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not list labels")
 	}
 
-	var labels []Label
+	var list []Label
 
 	const prefix = "deadline < "
-	for _, l := range ls {
-		name := l.GetName()
-		if !strings.HasPrefix(name, prefix) {
+	for _, label := range labels {
+		if !strings.HasPrefix(label, prefix) {
 			continue
 		}
-		days, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+		days, err := strconv.Atoi(strings.TrimPrefix(label, prefix))
 		if err != nil {
-			logrus.Errorf("could not parse days in %s", name)
+			logrus.Errorf("could not parse days in %s", label)
 			continue
 		}
-		labels = append(labels, Label{name, days})
+		list = append(list, Label{label, days})
 	}
 
-	sort.Slice(labels, func(i, j int) bool { return labels[i].Days < labels[j].Days })
-	return labels, nil
+	sort.Slice(list, func(i, j int) bool { return list[i].Days < list[j].Days })
+	return list, nil
 }
 
 // UpdateIssue finds a deadline in the issue and updates its labels accordingly.
-func (c *InstallationClient) UpdateIssue(ctx context.Context, owner, name string, number int) error {
-	labels, err := c.LabelsInRepo(ctx, owner, name)
+func (c *InstallationClient) UpdateIssue(ctx context.Context, owner, repo string, number int) error {
+	labels, err := c.LabelsInRepo(ctx, owner, repo)
 	if err != nil {
 		return err
 	}
 
-	issue, _, err := c.client.Issues.Get(ctx, owner, name, number)
-	if err != nil {
-		return errors.Wrapf(err, "could not fetch issue %s/%s#%d", owner, name, number)
-	}
-
-	return c.updateIssue(ctx, issue, labels)
+	return c.updateIssue(ctx, owner, repo, number, labels)
 }
 
-func (c *InstallationClient) updateIssue(ctx context.Context, issue *github.Issue, labels []Label) error {
-	owner := issue.GetRepository().GetOwner().GetLogin()
-	name := issue.GetRepository().GetName()
-	number := issue.GetNumber()
-	logrus.Debugf("handling issue %s/%s#%d: %s", owner, name, number, issue.GetTitle())
-	if issue.GetState() != "open" {
+func (c *InstallationClient) updateIssue(ctx context.Context, owner, repo string, number int, labels []Label) error {
+	logrus.Debugf("handling issue %s/%s#%d", owner, repo, number)
+	issue, err := c.client.issue(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	if issue.state != "open" {
 		return nil
 	}
 
-	comments, _, err := c.client.Issues.ListComments(ctx, owner, name, number, nil)
-	if err != nil {
-		return errors.Wrap(err, "could not fetch comments")
-	}
-
-	if err = c.checkReminders(ctx, owner, name, number, issue, comments); err != nil {
+	if err = c.checkReminders(ctx, issue); err != nil {
 		return err
 	}
 
-	bodies := []string{issue.GetBody()}
-	for _, comment := range comments {
-		bodies = append(bodies, comment.GetBody())
+	bodies := []string{issue.body}
+	for _, comment := range issue.comments {
+		bodies = append(bodies, comment.body)
 	}
 	deadlines := findTimes("deadline", bodies)
 	if len(deadlines) == 0 {
 		return nil
 	}
 	deadline := deadlines[len(deadlines)-1]
-	return c.checkDeadlines(ctx, owner, name, number, deadline, labels)
+	return c.checkDeadlines(ctx, owner, repo, number, deadline, labels)
 }
 
-func (c *InstallationClient) checkReminders(ctx context.Context, owner, name string, number int, issue *github.Issue, comments []*github.IssueComment) error {
+func (c *InstallationClient) checkReminders(ctx context.Context, issue *issue) error {
 	var reminded []time.Time
-	for _, comment := range comments {
-		if comment.GetUser().GetHTMLURL() == "https://github.com/apps/deadline-reminder" {
-			date := comment.GetCreatedAt()
+	for _, comment := range issue.comments {
+		if comment.author == "deadline-reminder[bot]" {
+			date := comment.created
 			date = time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
 			reminded = append(reminded, date)
 		}
@@ -226,27 +210,26 @@ func (c *InstallationClient) checkReminders(ctx context.Context, owner, name str
 			}
 
 			text := fmt.Sprintf("hi @%s, it's reminder day!", author)
-			comment := &github.IssueComment{Body: &text}
-			_, _, err := c.client.Issues.CreateComment(ctx, owner, name, number, comment)
+			err := c.client.createIssueComment(ctx, issue.repo.owner, issue.repo.name, issue.number, text)
 			if err != nil {
-				return errors.Wrapf(err, "could not comment on %s/%s#%d", owner, name, number)
+				return errors.Wrapf(err, "could not comment on %s/%s#%d", issue.repo.owner, issue.repo.name, issue.number)
 			}
 		}
 		return nil
 	}
 
-	if err := check(issue.GetUser().GetLogin(), issue.GetBody()); err != nil {
+	if err := check(issue.author, issue.body); err != nil {
 		return err
 	}
-	for _, comment := range comments {
-		if err := check(comment.GetUser().GetLogin(), comment.GetBody()); err != nil {
+	for _, comment := range issue.comments {
+		if err := check(comment.author, comment.body); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *InstallationClient) checkDeadlines(ctx context.Context, owner, name string, number int, deadline time.Time, labels []Label) error {
+func (c *InstallationClient) checkDeadlines(ctx context.Context, owner, repo string, number int, deadline time.Time, labels []Label) error {
 	days := time.Until(deadline).Hours() / 24
 
 	logrus.Debugf("issue #%d deadline in %v days", number, days)
@@ -258,9 +241,10 @@ func (c *InstallationClient) checkDeadlines(ctx context.Context, owner, name str
 	}
 
 	for i, l := range labels {
-		if i != labelIdx {
-			c.client.Issues.RemoveLabelForIssue(ctx, owner, name, number, l.Name)
+		if i == labelIdx {
+			continue
 		}
+		c.client.removeIssueLabel(ctx, owner, repo, number, l.Name)
 	}
 
 	// new deadline is too large for labels.
@@ -274,7 +258,7 @@ func (c *InstallationClient) checkDeadlines(ctx context.Context, owner, name str
 
 	newLabel := labels[labelIdx]
 	logrus.Debugf("applying %s to issue#%d", newLabel.Name, number)
-	_, _, err := c.client.Issues.AddLabelsToIssue(ctx, owner, name, number, []string{newLabel.Name})
+	err := c.client.addIssueLabel(ctx, owner, repo, number, newLabel.Name)
 	return errors.Wrapf(err, "could not apply label %s", newLabel.Name)
 }
 

@@ -57,17 +57,21 @@ func (s *server) cronHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	failed := false
 	for _, instID := range instIDs {
 		client, err := reminder.NewInstallationClient(s.appID, instID, s.key, s.transport)
 		if err != nil {
 			logrus.Errorf("could not create authenticated client: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
+			failed = true
+			continue
 		}
 		if err = client.UpdateInstallation(ctx); err != nil {
+			failed = true
 			logrus.Errorf("could not update installation: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
+	}
+	if failed {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
 
@@ -85,7 +89,7 @@ func (s *server) hookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inst, owner, name, issue, err := extractIssueInfo(r.Header.Get("X-Github-Event"), body)
+	inst, owner, repo, issue, err := extractIssueInfo(r.Header.Get("X-Github-Event"), body)
 	if err != nil {
 		logrus.Warnf("could not extract issue info: %v", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -100,11 +104,11 @@ func (s *server) hookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if issue == 0 {
-		logrus.Infof("updating repository %s/%s", owner, name)
-		err = client.UpdateRepo(r.Context(), owner, name)
+		logrus.Infof("updating repository %s/%s", owner, repo)
+		err = client.UpdateRepo(r.Context(), owner, repo)
 	} else {
-		logrus.Infof("updating issue %s/%s#%d", owner, name, issue)
-		err = client.UpdateIssue(r.Context(), owner, name, issue)
+		logrus.Infof("updating issue %s/%s#%d", owner, repo, issue)
+		err = client.UpdateIssue(r.Context(), owner, repo, issue)
 	}
 
 	if err != nil {
@@ -113,7 +117,7 @@ func (s *server) hookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func extractIssueInfo(kind string, body []byte) (inst int, owner, name string, issue int, err error) {
+func extractIssueInfo(kind string, body []byte) (inst int, owner, repo string, issue int, err error) {
 	switch kind {
 	case "issue_comment":
 		var data github.IssueCommentEvent
