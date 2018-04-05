@@ -50,7 +50,7 @@ func (c *githubClient) installations(ctx context.Context) ([]int, error) {
 
 	var ids []int
 	for _, inst := range insts {
-		ids = append(ids, inst.GetID())
+		ids = append(ids, int(inst.GetID()))
 	}
 	return ids, nil
 }

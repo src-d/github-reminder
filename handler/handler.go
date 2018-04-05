@@ -118,6 +118,7 @@ func (s *server) hookHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func extractIssueInfo(kind string, body []byte) (inst int, owner, repo string, issue int, err error) {
+	logrus.Debugf("extracting issue info for message of kind %s", kind)
 	switch kind {
 	case "issue_comment":
 		var data github.IssueCommentEvent
@@ -128,7 +129,7 @@ func extractIssueInfo(kind string, body []byte) (inst int, owner, repo string, i
 		if data.GetIssue().Repository == nil {
 			repo = data.GetRepo()
 		}
-		return data.GetInstallation().GetID(),
+		return int(data.GetInstallation().GetID()),
 			repo.GetOwner().GetLogin(),
 			repo.GetName(),
 			data.GetIssue().GetNumber(),
@@ -142,7 +143,7 @@ func extractIssueInfo(kind string, body []byte) (inst int, owner, repo string, i
 		if data.GetIssue().Repository == nil {
 			repo = data.GetRepo()
 		}
-		return data.GetInstallation().GetID(),
+		return int(data.GetInstallation().GetID()),
 			repo.GetOwner().GetLogin(),
 			repo.GetName(),
 			data.GetIssue().GetNumber(),
@@ -152,7 +153,7 @@ func extractIssueInfo(kind string, body []byte) (inst int, owner, repo string, i
 		if err := json.Unmarshal(body, &data); err != nil {
 			return 0, "", "", 0, errors.Wrap(err, "could not decode pull request event")
 		}
-		return data.GetInstallation().GetID(),
+		return int(data.GetInstallation().GetID()),
 			data.GetPullRequest().GetHead().GetRepo().GetOwner().GetLogin(),
 			data.GetPullRequest().GetHead().GetRepo().GetName(),
 			data.GetPullRequest().GetNumber(),
@@ -162,7 +163,7 @@ func extractIssueInfo(kind string, body []byte) (inst int, owner, repo string, i
 		if err := json.Unmarshal(body, &data); err != nil {
 			return 0, "", "", 0, errors.Wrap(err, "could not decode label event")
 		}
-		return data.GetInstallation().GetID(),
+		return int(data.GetInstallation().GetID()),
 			data.GetRepo().GetOwner().GetLogin(),
 			data.GetRepo().GetName(),
 			0,

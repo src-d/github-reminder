@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/bradleyfalzon/ghinstallation"
-	"github.com/campoy/unique"
 	"github.com/google/go-github/github"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -177,7 +176,7 @@ func (c *InstallationClient) updateIssue(ctx context.Context, owner, repo string
 	for _, comment := range issue.comments {
 		bodies = append(bodies, comment.body)
 	}
-	deadlines := findTimes("deadline", bodies)
+	deadlines := findTimes("deadline", bodies...)
 	if len(deadlines) == 0 {
 		return nil
 	}
@@ -196,7 +195,7 @@ func (c *InstallationClient) checkReminders(ctx context.Context, issue *issue) e
 	}
 
 	check := func(author, body string) error {
-		for _, reminder := range findTimes("reminder", []string{body}) {
+		for _, reminder := range findTimes("reminder", body) {
 			if diff := time.Until(reminder); diff > 24*time.Hour || diff < -24*time.Hour {
 				continue
 			}
@@ -233,10 +232,12 @@ func (c *InstallationClient) checkDeadlines(ctx context.Context, owner, repo str
 	days := time.Until(deadline).Hours() / 24
 
 	logrus.Debugf("issue #%d deadline in %v days", number, days)
-	var labelIdx int
-	for labelIdx = 0; labelIdx < len(labels); labelIdx++ {
-		if labels[labelIdx].Days > int(days) {
-			break
+	labelIdx := -1
+	if days > -1 {
+		for labelIdx = 0; labelIdx < len(labels); labelIdx++ {
+			if labels[labelIdx].Days > int(days) {
+				break
+			}
 		}
 	}
 
@@ -257,12 +258,12 @@ func (c *InstallationClient) checkDeadlines(ctx context.Context, owner, repo str
 	}
 
 	newLabel := labels[labelIdx]
-	logrus.Debugf("applying %s to issue#%d", newLabel.Name, number)
+	logrus.Debugf("applying %s to issue %s/%s#%d", newLabel.Name, owner, repo, number)
 	err := c.client.addIssueLabel(ctx, owner, repo, number, newLabel.Name)
 	return errors.Wrapf(err, "could not apply label %s", newLabel.Name)
 }
 
-func findTimes(word string, bodies []string) []time.Time {
+func findTimes(word string, bodies ...string) []time.Time {
 	var times []time.Time
 	for _, body := range bodies {
 		body = strings.ToLower(body)
@@ -284,12 +285,12 @@ func findTimes(word string, bodies []string) []time.Time {
 		}
 	}
 
-	unique.Slice(&times, func(i, j int) bool { return times[i].Before(times[j]) })
 	return times
 }
 
 var dateLayouts = []string{
 	"2006/01/02",
+	"2006-01-02",
 	"2006 January 2",
 	"2006 Jan 2",
 	"January 2 2006",
