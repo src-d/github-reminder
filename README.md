@@ -1,5 +1,8 @@
 # GitHub Reminder
 
+[![Travis (.org)](https://img.shields.io/travis/src-d/github-reminder/master.svg?style=flat-square)](https://travis-ci.org/src-d/github-reminder)
+[![Codecov branch](https://img.shields.io/codecov/c/github/src-d/github-reminder/master.svg?style=flat-square)](https://codecov.io/gh/src-d/github-reminder)
+
 GitHub reminder is a bot that parses issues looking for dates and applies labels according to them.
 
 The bot simply looks for lines like `deadline is June 20th 2015` and every day applies the most
