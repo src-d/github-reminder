@@ -100,6 +100,7 @@ func TestAvoidAddingSecondReminderComment(t *testing.T) {
 	ic := InstallationClient{42, 43, &fakeClient{
 		_repoLabels: func(ctx context.Context, owner, repo string) ([]string, error) { return nil, nil },
 		_issue: func(ctx context.Context, owner, repo string, number int) (*issue, error) {
+			now := time.Now()
 			return &issue{
 				repo:   repository{owner, repo},
 				number: number,
@@ -110,11 +111,12 @@ func TestAvoidAddingSecondReminderComment(t *testing.T) {
 				comments: []comment{{
 					author:  "francesc",
 					body:    fmt.Sprintf("reminder: %s\n", time.Now().Format("2006-01-02")),
-					created: time.Now().Add(-96 * time.Hour),
+					created: now.Add(-96 * time.Hour),
 				}, {
-					author:  "deadline-reminder[bot]",
-					body:    "hi @francesc, it's reminder time!",
-					created: time.Now().Add(-24 * time.Hour),
+					author: "deadline-reminder[bot]",
+					body:   "hi @francesc, it's reminder time!",
+					// 1 am today
+					created: time.Date(now.Year(), now.Month(), now.Day(), 1, 0, 0, 0, now.Location()),
 				}},
 			}, nil
 		},
