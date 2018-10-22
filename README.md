@@ -14,3 +14,8 @@ the syntax `deadline < 30`, `deadline < 5` etc.
 If the deadline is on 31 days or more no label is applied, if it's in between 6 days and 30
 the `deadline < 30` will be applied. Finally for 5 days or less `deadline < 5` will
 apply.
+
+
+## License
+
+Apache License 2.0, see [LICENSE](/LICENSE)
