@@ -196,7 +196,7 @@ func (c *InstallationClient) checkReminders(ctx context.Context, issue *issue) e
 
 	check := func(author, body string) error {
 		for _, reminder := range findTimes("reminder", body) {
-			now := time.Now()
+			now := time.Now().In(time.UTC)
 			// not the same day
 			if reminder.Day() != now.Day() || reminder.Month() != now.Month() || reminder.Year() != now.Year() {
 				continue
